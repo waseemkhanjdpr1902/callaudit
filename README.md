@@ -10,6 +10,8 @@ AI-assisted multilingual customer-service call auditing for individual and batch
 - Evidence-based parameter scoring
 - Critical-failure and coaching findings
 - Batch dashboard and CSV export
+- Up to 50 recordings per batch and 25 MB per recording
+- Detailed CSV and complete JSON audit reports
 
 ## Setup
 
@@ -19,4 +21,4 @@ AI-assisted multilingual customer-service call auditing for individual and batch
 
 For Vercel, configure `GEMINI_API_KEY` for the primary provider and `GROQ_API_KEY` for automatic fallback. The optional model variables are documented in `.env.example`.
 
-The fallback uses Groq Whisper for multilingual transcription and then Groq's language model for the structured QA audit.
+The fallback uses Groq Whisper for multilingual transcription and then Groq's language model for the structured QA audit. If a configured Groq audit model is unavailable, the server tries supported backup model IDs automatically.
