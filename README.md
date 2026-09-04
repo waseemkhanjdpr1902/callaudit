@@ -11,7 +11,7 @@ AI-assisted multilingual customer-service call auditing for individual and batch
 - Critical-failure and coaching findings
 - Batch dashboard and CSV export
 - Up to 50 recordings per batch and 25 MB per recording
-- Detailed CSV and complete JSON audit reports
+- Excel reports matching the operational audit template, plus detailed CSV and complete JSON exports
 
 ## Setup
 
