@@ -11,13 +11,14 @@ const MAX_FILES = 50;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 const DEFAULT_CRITERIA: Criterion[] = [
-  { id: "opening", name: "Opening & verification", weight: 15, description: "Greeting, introduction, consent and mandatory verification." },
-  { id: "listening", name: "Listening & discovery", weight: 15, description: "Understands the need, probes appropriately and avoids interruption." },
-  { id: "accuracy", name: "Accuracy & resolution", weight: 25, description: "Provides correct, complete information and a workable resolution." },
-  { id: "empathy", name: "Empathy & ownership", weight: 15, description: "Acknowledges concern, reassures and takes responsibility." },
-  { id: "communication", name: "Communication quality", weight: 10, description: "Clear, professional, concise language with suitable pace and tone." },
-  { id: "compliance", name: "Compliance & privacy", weight: 15, description: "No sensitive-data breach, false commitment or prohibited conduct." },
-  { id: "closing", name: "Closing", weight: 5, description: "Confirms resolution, next steps and offers further assistance." },
+  { id: "greeting", name: "Opening & professional greeting", weight: 10, description: "Credit any professional greeting, welcome, company/self-introduction or offer to help. Accept English, Hindi, Urdu, Hinglish and semantic equivalents. If the recording starts mid-call, mark the opening not assessable rather than failed." },
+  { id: "verification", name: "Customer verification & privacy", weight: 15, description: "For account-specific service, PAN, registered email, DOB, client code/account ID or registered mobile counts as valid basic verification. Do not require verification for general information with no account disclosure. Redact actual identifiers in evidence." },
+  { id: "discovery", name: "Listening & problem identification", weight: 15, description: "Allows the customer to explain, identifies the actual broking query, probes relevant facts, confirms understanding and avoids unnecessary interruption." },
+  { id: "accuracy", name: "Broking accuracy & process knowledge", weight: 20, description: "Gives accurate guidance for orders, trades, funds/ledger, brokerage/charges, contract notes, holdings, demat/DP, margin/pledge, KYC, login issues, complaints or escalation. Do not invent unsupported process requirements." },
+  { id: "resolution", name: "Resolution, ownership & TAT", weight: 15, description: "Provides a correct resolution or appropriate escalation, reference/ticket where applicable, realistic turnaround time, callback commitment and clear next steps." },
+  { id: "communication", name: "Communication & empathy", weight: 10, description: "Professional, respectful, understandable and appropriately empathetic communication. Mixed-language service is acceptable when it helps the customer." },
+  { id: "compliance", name: "Regulatory compliance & risk", weight: 10, description: "No guaranteed returns, unauthorized advice/trading, mis-selling, concealed risk or charges, fabricated commitment, unsafe data disclosure, abusive conduct or other material compliance breach." },
+  { id: "closing", name: "Closing & confirmation", weight: 5, description: "Confirms resolution or next steps, checks whether further help is needed and closes courteously. Do not over-penalize an abruptly disconnected or clipped recording." },
 ];
 
 const DEMO_RESULT: AuditResult = { fileName: "sample-support-call.mp3", overallScore: 82, language: "Hindi + English", summary: "The advisor resolved the billing query accurately and maintained a calm tone. Verification was incomplete and the closing missed a clear turnaround-time recap.", disposition: "Needs coaching", sections: [
