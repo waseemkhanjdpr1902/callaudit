@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 type Criterion = { name: string; weight: number; description: string };
 type JsonRecord = Record<string, unknown>;
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -54,22 +55,31 @@ async function auditWithGroq(audio: File, criteria: Criterion[], apiKey: string)
   const transcription = await transcriptionResponse.json();
   if (!transcription.text) throw new Error("Groq returned an empty transcript");
 
-  const auditResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
-      temperature: 0.1,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: auditPrompt(criteria, transcription.text) },
-      ],
-    }),
-  });
-  if (!auditResponse.ok) throw new Error(`Groq audit failed with ${auditResponse.status}`);
-  const auditPayload = await auditResponse.json();
-  return parseJson(auditPayload.choices?.[0]?.message?.content || "");
+  const configuredModel = process.env.GROQ_MODEL;
+  const models = [...new Set([configuredModel, "llama-3.3-70b-versatile", "openai/gpt-oss-120b"].filter(Boolean))] as string[];
+  let lastError = "No Groq audit model succeeded";
+  for (const model of models) {
+    const auditResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: auditPrompt(criteria, transcription.text) },
+        ],
+      }),
+    });
+    if (auditResponse.ok) {
+      const auditPayload = await auditResponse.json();
+      return parseJson(auditPayload.choices?.[0]?.message?.content || "");
+    }
+    lastError = `Groq audit model ${model} failed with ${auditResponse.status}`;
+    if (![400, 404, 422].includes(auditResponse.status)) break;
+  }
+  throw new Error(lastError);
 }
 
 export async function POST(request: Request) {
@@ -77,7 +87,7 @@ export async function POST(request: Request) {
     const form = await request.formData();
     const audio = form.get("audio");
     if (!(audio instanceof File)) return NextResponse.json({ error: "An audio file is required." }, { status: 400 });
-    if (audio.size > 4 * 1024 * 1024) return NextResponse.json({ error: "Audio files must be 4 MB or smaller." }, { status: 413 });
+    if (audio.size > MAX_AUDIO_BYTES) return NextResponse.json({ error: "Audio files must be 25 MB or smaller." }, { status: 413 });
     if (!audio.type.startsWith("audio/") && !/\.(mp3|wav|m4a|ogg|aac|flac)$/i.test(audio.name)) return NextResponse.json({ error: "Unsupported audio format." }, { status: 415 });
 
     let criteria: Criterion[] = [];
@@ -92,13 +102,14 @@ export async function POST(request: Request) {
 
     let result: JsonRecord | undefined;
     let provider = "";
+    const providerErrors: string[] = [];
     if (geminiKey) {
-      try { result = await auditWithGemini(audio, criteria, geminiKey); provider = "gemini"; } catch (error) { console.warn("Gemini audit failed; trying Groq fallback.", error); }
+      try { result = await auditWithGemini(audio, criteria, geminiKey); provider = "gemini"; } catch (error) { const message = error instanceof Error ? error.message : "Gemini failed"; providerErrors.push(message); console.warn("Gemini audit failed; trying Groq fallback.", error); }
     }
     if (!result && groqKey) {
-      try { result = await auditWithGroq(audio, criteria, groqKey); provider = "groq"; } catch (error) { console.error("Groq fallback failed.", error); }
+      try { result = await auditWithGroq(audio, criteria, groqKey); provider = "groq"; } catch (error) { const message = error instanceof Error ? error.message : "Groq failed"; providerErrors.push(message); console.error("Groq fallback failed.", error); }
     }
-    if (!result) return NextResponse.json({ error: "Both AI providers could not process this recording. Try a shorter file or another supported format." }, { status: 502 });
+    if (!result) return NextResponse.json({ error: "AI providers could not process this recording.", details: providerErrors.join(" · ") || "No configured provider was available." }, { status: 502 });
 
     return NextResponse.json({ result: { ...result, fileName: audio.name }, provider }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
