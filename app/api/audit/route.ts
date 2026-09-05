@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
+import { del } from "@vercel/blob";
 
 type Criterion = { name: string; weight: number; description: string };
 type JsonRecord = Record<string, unknown>;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504]);
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -33,20 +35,45 @@ function parseJson(text: string): JsonRecord {
   return JSON.parse(cleaned.slice(start, end + 1)) as JsonRecord;
 }
 
+const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+async function fetchWithRetry(url: string, init: RequestInit, label: string, attempts = 3) {
+  let lastResponse: Response | undefined;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await fetch(url, init);
+      lastResponse = response;
+      if (response.ok || !RETRYABLE_STATUS.has(response.status) || attempt === attempts) return response;
+      const retryAfter = Number(response.headers.get("retry-after"));
+      await wait(Number.isFinite(retryAfter) ? retryAfter * 1000 : 750 * 2 ** (attempt - 1));
+    } catch (error) {
+      if (attempt === attempts) throw error;
+      console.warn(`[${label}] network attempt ${attempt} failed; retrying`, error);
+      await wait(750 * 2 ** (attempt - 1));
+    }
+  }
+  return lastResponse!;
+}
+
+async function providerError(response: Response, label: string) {
+  const details = (await response.text()).slice(0, 500).replace(/\s+/g, " ");
+  return `${label} failed with ${response.status}${details ? `: ${details}` : ""}`;
+}
+
 async function auditWithGemini(audio: File, criteria: Criterion[], apiKey: string) {
   const bytes = new Uint8Array(await audio.arrayBuffer());
   let binary = "";
   for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
   const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+  const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ text: auditPrompt(criteria) }, { inlineData: { mimeType: audio.type || "audio/mpeg", data: btoa(binary) } }] }],
       generationConfig: { temperature: 0.1, responseMimeType: "application/json", maxOutputTokens: 5000 },
     }),
-  });
-  if (!response.ok) throw new Error(`Gemini failed with ${response.status}`);
+  }, "gemini");
+  if (!response.ok) throw new Error(await providerError(response, "Gemini"));
   const payload = await response.json();
   const text = payload.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text || "").join("") || "";
   return parseJson(text);
@@ -58,12 +85,12 @@ async function auditWithGroq(audio: File, criteria: Criterion[], apiKey: string)
   transcriptionForm.append("model", process.env.GROQ_TRANSCRIPTION_MODEL || "whisper-large-v3-turbo");
   transcriptionForm.append("response_format", "json");
   transcriptionForm.append("temperature", "0");
-  const transcriptionResponse = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+  const transcriptionResponse = await fetchWithRetry("https://api.groq.com/openai/v1/audio/transcriptions", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}` },
     body: transcriptionForm,
-  });
-  if (!transcriptionResponse.ok) throw new Error(`Groq transcription failed with ${transcriptionResponse.status}`);
+  }, "groq-transcription");
+  if (!transcriptionResponse.ok) throw new Error(await providerError(transcriptionResponse, "Groq transcription"));
   const transcription = await transcriptionResponse.json();
   if (!transcription.text) throw new Error("Groq returned an empty transcript");
 
@@ -71,7 +98,7 @@ async function auditWithGroq(audio: File, criteria: Criterion[], apiKey: string)
   const models = [...new Set([configuredModel, "llama-3.3-70b-versatile", "openai/gpt-oss-120b"].filter(Boolean))] as string[];
   let lastError = "No Groq audit model succeeded";
   for (const model of models) {
-    const auditResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const auditResponse = await fetchWithRetry("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -83,27 +110,48 @@ async function auditWithGroq(audio: File, criteria: Criterion[], apiKey: string)
           { role: "user", content: auditPrompt(criteria, transcription.text) },
         ],
       }),
-    });
+    }, `groq-audit-${model}`);
     if (auditResponse.ok) {
       const auditPayload = await auditResponse.json();
       return parseJson(auditPayload.choices?.[0]?.message?.content || "");
     }
-    lastError = `Groq audit model ${model} failed with ${auditResponse.status}`;
+    lastError = await providerError(auditResponse, `Groq audit model ${model}`);
     if (![400, 404, 422].includes(auditResponse.status)) break;
   }
   throw new Error(lastError);
 }
 
 export async function POST(request: Request) {
+  let temporaryBlobUrl = "";
   try {
-    const form = await request.formData();
-    const audio = form.get("audio");
-    if (!(audio instanceof File)) return NextResponse.json({ error: "An audio file is required." }, { status: 400 });
+    let audio: File;
+    let criteriaValue: unknown;
+    if ((request.headers.get("content-type") || "").includes("application/json")) {
+      const body = await request.json() as { audioUrl?: string; fileName?: string; fileType?: string; criteria?: unknown };
+      if (!body.audioUrl || !body.audioUrl.startsWith("https://") || !new URL(body.audioUrl).hostname.endsWith(".public.blob.vercel-storage.com")) {
+        return NextResponse.json({ error: "A valid temporary audio upload is required." }, { status: 400 });
+      }
+      temporaryBlobUrl = body.audioUrl;
+      const source = await fetch(body.audioUrl, { cache: "no-store" });
+      if (!source.ok) throw new Error(`Temporary audio download failed with ${source.status}`);
+      const declaredSize = Number(source.headers.get("content-length") || 0);
+      if (declaredSize > MAX_AUDIO_BYTES) return NextResponse.json({ error: "Audio files must be 25 MB or smaller." }, { status: 413 });
+      const bytes = await source.arrayBuffer();
+      if (bytes.byteLength > MAX_AUDIO_BYTES) return NextResponse.json({ error: "Audio files must be 25 MB or smaller." }, { status: 413 });
+      audio = new File([bytes], String(body.fileName || "recording.mp3"), { type: String(body.fileType || source.headers.get("content-type") || "audio/mpeg") });
+      criteriaValue = body.criteria;
+    } else {
+      const form = await request.formData();
+      const file = form.get("audio");
+      if (!(file instanceof File)) return NextResponse.json({ error: "An audio file is required." }, { status: 400 });
+      audio = file;
+      criteriaValue = form.get("criteria");
+    }
     if (audio.size > MAX_AUDIO_BYTES) return NextResponse.json({ error: "Audio files must be 25 MB or smaller." }, { status: 413 });
     if (!audio.type.startsWith("audio/") && !/\.(mp3|wav|m4a|ogg|aac|flac)$/i.test(audio.name)) return NextResponse.json({ error: "Unsupported audio format." }, { status: 415 });
 
     let criteria: Criterion[] = [];
-    try { criteria = JSON.parse(String(form.get("criteria") || "[]")); } catch { return NextResponse.json({ error: "The audit checklist is invalid." }, { status: 400 }); }
+    try { criteria = typeof criteriaValue === "string" ? JSON.parse(criteriaValue) : criteriaValue as Criterion[]; } catch { return NextResponse.json({ error: "The audit checklist is invalid." }, { status: 400 }); }
     if (!Array.isArray(criteria) || !criteria.length || criteria.length > 30) return NextResponse.json({ error: "Add between 1 and 30 audit parameters." }, { status: 400 });
     criteria = criteria.map(item => ({ name: String(item.name || "").slice(0, 120), weight: Number(item.weight), description: String(item.description || "").slice(0, 500) })).filter(item => item.name && Number.isFinite(item.weight) && item.weight >= 0);
     if (Math.round(criteria.reduce((sum, item) => sum + item.weight, 0)) !== 100) return NextResponse.json({ error: "Audit parameter weights must total 100%." }, { status: 400 });
@@ -127,5 +175,9 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("Audit request failed.", error);
     return NextResponse.json({ error: "This recording could not be audited. Please verify the file and try again." }, { status: 500 });
+  } finally {
+    if (temporaryBlobUrl) {
+      try { await del(temporaryBlobUrl); } catch (error) { console.warn("[audit] temporary blob cleanup failed", error); }
+    }
   }
 }
