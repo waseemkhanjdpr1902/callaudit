@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { del } from "@vercel/blob";
+import { del, get } from "@vercel/blob";
 
 type Criterion = { name: string; weight: number; description: string };
 type JsonRecord = Record<string, unknown>;
@@ -128,17 +128,29 @@ export async function POST(request: Request) {
     let criteriaValue: unknown;
     if ((request.headers.get("content-type") || "").includes("application/json")) {
       const body = await request.json() as { audioUrl?: string; fileName?: string; fileType?: string; criteria?: unknown };
-      if (!body.audioUrl || !body.audioUrl.startsWith("https://") || !new URL(body.audioUrl).hostname.endsWith(".public.blob.vercel-storage.com")) {
+      let blobUrl: URL;
+      try { blobUrl = new URL(String(body.audioUrl || "")); } catch { return NextResponse.json({ error: "A valid temporary audio upload is required." }, { status: 400 }); }
+      if (blobUrl.protocol !== "https:" || !blobUrl.hostname.endsWith(".blob.vercel-storage.com")) {
         return NextResponse.json({ error: "A valid temporary audio upload is required." }, { status: 400 });
       }
-      temporaryBlobUrl = body.audioUrl;
-      const source = await fetch(body.audioUrl, { cache: "no-store" });
-      if (!source.ok) throw new Error(`Temporary audio download failed with ${source.status}`);
-      const declaredSize = Number(source.headers.get("content-length") || 0);
-      if (declaredSize > MAX_AUDIO_BYTES) return NextResponse.json({ error: "Audio files must be 25 MB or smaller." }, { status: 413 });
-      const bytes = await source.arrayBuffer();
+      temporaryBlobUrl = blobUrl.href;
+      let bytes: ArrayBuffer;
+      let sourceType = "";
+      const source = await fetch(blobUrl, { cache: "no-store" });
+      if (source.ok) {
+        const declaredSize = Number(source.headers.get("content-length") || 0);
+        if (declaredSize > MAX_AUDIO_BYTES) return NextResponse.json({ error: "Audio files must be 25 MB or smaller." }, { status: 413 });
+        sourceType = source.headers.get("content-type") || "";
+        bytes = await source.arrayBuffer();
+      } else {
+        const privateSource = await get(blobUrl.href, { access: "private", useCache: false });
+        if (!privateSource || privateSource.statusCode !== 200) throw new Error(`Temporary audio download failed with ${source.status}`);
+        if (privateSource.blob.size > MAX_AUDIO_BYTES) return NextResponse.json({ error: "Audio files must be 25 MB or smaller." }, { status: 413 });
+        sourceType = privateSource.blob.contentType;
+        bytes = await new Response(privateSource.stream).arrayBuffer();
+      }
       if (bytes.byteLength > MAX_AUDIO_BYTES) return NextResponse.json({ error: "Audio files must be 25 MB or smaller." }, { status: 413 });
-      audio = new File([bytes], String(body.fileName || "recording.mp3"), { type: String(body.fileType || source.headers.get("content-type") || "audio/mpeg") });
+      audio = new File([bytes], String(body.fileName || "recording.mp3"), { type: String(body.fileType || sourceType || "audio/mpeg") });
       criteriaValue = body.criteria;
     } else {
       const form = await request.formData();
