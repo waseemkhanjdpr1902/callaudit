@@ -1,4 +1,5 @@
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { issueSignedToken } from "@vercel/blob";
+import { handleUploadPresigned, type HandleUploadPresignedBody } from "@vercel/blob/client";
 import { NextResponse } from "next/server";
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
@@ -9,28 +10,39 @@ const AUDIO_TYPES = [
 ];
 
 export async function POST(request: Request) {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+  if (!process.env.BLOB_STORE_ID || !process.env.BLOB_WEBHOOK_PUBLIC_KEY) {
     return NextResponse.json(
-      { error: "Large-file upload is not configured. Connect a Vercel Blob store to this project." },
+      { error: "Large-file upload is not configured. Connect a Vercel Blob store to this project for Production." },
       { status: 503 },
     );
   }
 
   try {
-    const body = (await request.json()) as HandleUploadBody;
-    const response = await handleUpload({
+    const body = (await request.json()) as HandleUploadPresignedBody;
+    const response = await handleUploadPresigned({
       body,
       request,
-      onBeforeGenerateToken: async (pathname, clientPayload) => {
+      webhookPublicKey: process.env.BLOB_WEBHOOK_PUBLIC_KEY,
+      getSignedToken: async (pathname, clientPayload) => {
         const metadata = JSON.parse(clientPayload || "{}") as { size?: number; type?: string };
         if (!pathname.startsWith("call-audits/")) throw new Error("Invalid upload path.");
         if (!metadata.size || metadata.size > MAX_AUDIO_BYTES) throw new Error("Audio files must be 25 MB or smaller.");
         if (metadata.type && !AUDIO_TYPES.includes(metadata.type) && !metadata.type.startsWith("audio/")) throw new Error("Unsupported audio format.");
+        const validUntil = Date.now() + 15 * 60 * 1000;
         return {
-          allowedContentTypes: AUDIO_TYPES,
-          maximumSizeInBytes: MAX_AUDIO_BYTES,
-          addRandomSuffix: true,
-          tokenPayload: JSON.stringify({ size: metadata.size, type: metadata.type }),
+          token: await issueSignedToken({
+            pathname,
+            operations: ["put"],
+            allowedContentTypes: AUDIO_TYPES,
+            maximumSizeInBytes: MAX_AUDIO_BYTES,
+            validUntil,
+          }),
+          urlOptions: {
+            allowedContentTypes: AUDIO_TYPES,
+            maximumSizeInBytes: MAX_AUDIO_BYTES,
+            validUntil,
+            tokenPayload: JSON.stringify({ size: metadata.size, type: metadata.type }),
+          },
         };
       },
       onUploadCompleted: async () => {},
