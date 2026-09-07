@@ -443,6 +443,8 @@ export default function Home() {
         "Provider",
         "Estimated answer time",
         "Answer rating",
+        "What went well",
+        "Areas for improvement",
         "Observation",
         "Action for improvement",
         "Severity",
@@ -460,6 +462,8 @@ export default function Home() {
           item.provider || "",
           item.answerTiming?.seconds ?? "Not assessable",
           item.answerTiming?.rating || "Not assessable",
+          item.strengths.join(" | "),
+          item.coaching.join(" | "),
           row.observation,
           row.action,
           row.severity,
@@ -471,6 +475,8 @@ export default function Home() {
     failures.forEach((item) =>
       rows.push([
         item.fileName,
+        "",
+        "",
         "",
         "",
         "",
@@ -899,19 +905,24 @@ export default function Home() {
                     </p>
                     <div className="mt-4 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.06] p-4">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h3 className="font-bold text-cyan-200">Inbound answer speed</h3>
+                        <h3 className="font-bold text-cyan-200">
+                          Inbound answer speed
+                        </h3>
                         <span className="rounded-full bg-[#07111f] px-3 py-1 text-sm font-bold">
                           {active.answerTiming?.seconds == null
                             ? "Not assessable"
-                            : `~${active.answerTiming.seconds.toFixed(1)} sec`} {" · "}
+                            : `~${active.answerTiming.seconds.toFixed(1)} sec`}{" "}
+                          {" · "}
                           {active.answerTiming?.rating || "Not assessable"}
                         </span>
                       </div>
                       <p className="mt-2 text-xs leading-5 text-slate-400">
-                        {active.answerTiming?.basis || "The opening audio was insufficient to estimate answer speed."}
+                        {active.answerTiming?.basis ||
+                          "The opening audio was insufficient to estimate answer speed."}
                       </p>
                       <p className="mt-2 text-[11px] text-slate-500">
-                        Audio estimate only. Exact SLA requires call-landed and agent-answered timestamps from the telephony system.
+                        Audio estimate only. Exact SLA requires call-landed and
+                        agent-answered timestamps from the telephony system.
                       </p>
                     </div>
                     <FeedbackTable rows={active.feedback || []} />
@@ -1004,11 +1015,17 @@ function FeedbackTable({ rows }: { rows: FeedbackRow[] }) {
               <tr key={`${row.observation}-${index}`} className="align-top">
                 <td className="px-4 py-4 text-slate-200">
                   {row.observation}
-                  {row.evidence && <p className="mt-2 text-xs italic text-slate-500">Evidence: {row.evidence}</p>}
+                  {row.evidence && (
+                    <p className="mt-2 text-xs italic text-slate-500">
+                      Evidence: {row.evidence}
+                    </p>
+                  )}
                 </td>
                 <td className="px-4 py-4 text-slate-300">{row.action}</td>
                 <td className="px-4 py-4">
-                  <span className={`rounded-full px-2 py-1 text-xs font-bold ${row.severity === "Critical" ? "bg-rose-400/10 text-rose-300" : row.severity === "Positive" ? "bg-emerald-400/10 text-emerald-300" : "bg-amber-400/10 text-amber-300"}`}>
+                  <span
+                    className={`rounded-full px-2 py-1 text-xs font-bold ${row.severity === "Critical" ? "bg-rose-400/10 text-rose-300" : row.severity === "Positive" ? "bg-emerald-400/10 text-emerald-300" : "bg-amber-400/10 text-amber-300"}`}
+                  >
                     {row.severity}
                   </span>
                 </td>
